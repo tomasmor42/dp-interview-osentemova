@@ -33,6 +33,7 @@ download. In the original archive, there is also a file named
 """
 import hashlib
 import os
+from datetime import datetime
 
 REQUIRES = ""
 
@@ -253,6 +254,51 @@ def uniques_by_country(dbname: str, tablename: str,
     assert os.path.exists(resultfilename)
     assert compare_results(resultfilename)
 
+def make_classes():
+    """You will make three classes here inside of this function.
+    
+    1. Define a class called `Task`. This class needs to have a
+    constructor that takes a datetime object and saves it as an
+    instance member named `start_time`. It will also define an
+    instance member named `results` and set it to `None`. This class
+    also has a method named `run` which takes an arbitrary number of
+    arguments as parameters. It should raise an exception when called.
+
+    2. Define a class named `ListSum`. This class inherits from
+    `Task`. The `run` method for this will take an arbitrary number of
+    integers, and sum them up. It will store the sum in `results`.
+
+    3. Define a class named `ListAverage`. This class inherits from
+    `Task`. The `run` method will take an arbitrary number of
+    integers, and average them. It will store the average in
+    `results`.
+
+    Add a method somewhere in this hierarchy that will allow you to
+    compare two `Tasks` based on their `start_time`, so that we can
+    list them in the order of their `start_time`.
+
+    All the assert statements at the end of this function need to pass correctly.
+
+    """
+
+    t1 = Task(datetime.now())
+    try:
+        t1.run()
+        raise Exception("You didn't generate an exception!")
+    except Exception as e:
+        if str(e) == "You didn't generate an exception!":
+            raise e
+
+    j1 = ListSum(datetime(2020, 1, 1, 0, 0, 0))
+    j2 = ListAverage(datetime(2020, 6, 1, 0, 0, 0))
+    jobs = [j2, j1]
+    jobs.sort(key=lambda x: x.start_time)
+    j1.run(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    j2.run(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+    assert j1.results == 55
+    assert j2.results == 5.5
+    assert jobs == [j1, j2]
 
 def main():
     """This is the method that is responsible for actually running the
@@ -275,6 +321,8 @@ def main():
     total_record_count(dbname, tablename, countsfile)
     times_by_country(dbname, tablename, country_times_file)
     uniques_by_country(dbname, tablename, country_uniques_file)
+
+    make_classes()
 
 
 if __name__ == '__main__':
