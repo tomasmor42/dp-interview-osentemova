@@ -35,10 +35,27 @@ import hashlib
 import os
 from datetime import datetime
 
-REQUIRES = ""
+
+import requests
+import zipfile
+import tempfile
+import shutil
+import mysql.connector
+import csv
+
+REQUIRES = ["requests", "mysql-connector-python"]
 
 # TODO: Update DBPARAMS here to set up the database connection
+HOST = os.getenv("HOST", '127.0.0.1')
+PORT = os.getenv("PORT", 3306)
+USER = os.getenv("USER", "root")
+PASSWORD = os.getenv("PASSWORD", "password")
+
 DBPARAMS = {
+    'host': HOST,
+    'port': PORT,
+    'user': USER,
+    'password': PASSWORD
     }
 
 COLUMN_DEFINITIONS = [
@@ -188,6 +205,15 @@ def download_zip(url: str, zipfilename: str) -> None:
     """
     # TODO: retrieve the file and save to disk in the current
     # directory. Note: This file is 160M
+    response = requests.get(url, stream=True)
+    if not response.ok:
+        response.raise_for_status()
+    with open(zipfilename, 'wb') as zf:
+            for chunk in response.iter_content(chunk_size=65536):
+                if chunk:
+                    zf.write(chunk)
+                    zf.flush()
+                    os.fsync(zf.fileno())
 
     assert os.path.exists(zipfilename)
     assert shasum(zipfilename) == \
@@ -202,10 +228,29 @@ def unpack_zip(zipfilename: str, datafilename: str) -> None:
     """
     # TODO: Extract the datafile and store it to disk in the current
     # directory. Note: The output file is nearly 400M
+    found_flag = False
+    zipfolder_name = zipfilename.split(".")[0]
+    with zipfile.ZipFile(zipfilename) as zf:
+        with tempfile.TemporaryDirectory() as tmpdirname:
+            for filename in zf.namelist():
+                    if filename.endswith(datafilename):
+                        zf.extract(filename, tmpdirname)
+                        shutil.copyfile(os.path.join(
+                            tmpdirname, zipfolder_name, datafilename), datafilename)
+                        found_flag = True
+    if not found_flag:
+        raise ValueError("File does not exist")
 
     assert os.path.exists(datafilename)
     assert shasum(datafilename) == \
         'dfbd5253f3f21f0569b34f2d1f47fbb71f5324ed26c3debbe29e84d42ce6d563'
+
+
+def replace_none(origin_dict):
+    for key, value in origin_dict.items():
+        if (value.lower() == 'none') or (value.lower() == 'null'):
+            origin_dict[key] = None
+    return origin_dict
 
 
 def send_to_database(datafilename: str, dbname: str, tablename: str) -> None:
@@ -217,6 +262,31 @@ def send_to_database(datafilename: str, dbname: str, tablename: str) -> None:
 
     # TODO: any necessary preparations on the data after loading, and before
     # running the queries to come.
+    connection = mysql.connector.connect(**DBPARAMS)
+    try:
+        
+        cursor = connection.cursor()
+        create_database = f"CREATE DATABASE IF NOT EXISTS {dbname}"
+        cursor.execute(create_database)
+        cursor.execute(f"USE {dbname};")
+        create_table_params = ""
+        for column_def in COLUMN_DEFINITIONS:
+            create_table_params += f"`{column_def[0]}` {column_def[1]},"
+        table_create = "CREATE TABLE IF NOT EXISTS `{}` ({});".format(tablename, create_table_params[:-1])
+        cursor.execute(table_create)
+        with open(datafilename) as csv_df:
+            df = csv.DictReader(csv_df,  delimiter='\t')
+            for row in df:
+                row = replace_none(row)
+                placeholders = ', '.join(['%s'] * len(row))
+                columns = ', '.join(row.keys())
+                insert_row = "INSERT INTO %s ( %s ) VALUES ( %s )" % (tablename, columns, placeholders)
+                cursor.execute(insert_row, list(row.values()))
+        connection.commit()
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
 
 
 def total_record_count(dbname: str, tablename: str,
@@ -225,6 +295,20 @@ def total_record_count(dbname: str, tablename: str,
     Write out the count of records that exist in this table to resultfilename
     """
     # TODO: query for count of records, write to file
+    try: 
+        connection = mysql.connector.connect(database=dbname, **DBPARAMS)
+        cursor = connection.cursor()
+        count_query = f"SELECT COUNT(*) from `{tablename}`"
+        cursor.execute(count_query)
+        res = cursor.fetchone()
+        total_rows = res[0]
+        with open(resultfilename, 'w+') as write_file:
+            write_file.write('"' + str(total_rows) + '"\n')
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
     assert os.path.exists(resultfilename)
     assert compare_results(resultfilename)
 
@@ -237,6 +321,19 @@ def times_by_country(dbname: str, tablename: str, resultfilename: str) -> None:
 
     """
     # TODO: Create the results file that shows the average time per country
+    try: 
+        connection = mysql.connector.connect(database=dbname, **DBPARAMS)
+        cursor = connection.cursor()
+        count_query = f"SELECT country, AVG(testelapse) from `{tablename}` GROUP BY \
+            country HAVING country IS NOT NULL ORDER BY country"
+        cursor.execute(count_query)
+        with open(resultfilename, 'w+') as write_file:
+            for line in cursor.fetchall():
+                write_file.write('"'+ str(line[0]) + '","' + str(line[1]) + '"\n')
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
     assert os.path.exists(resultfilename)
     assert compare_results(resultfilename)
 
@@ -251,6 +348,21 @@ def uniques_by_country(dbname: str, tablename: str,
 
     """
     # TODO: create the results file for the unique visitors per country
+    try: 
+        connection = mysql.connector.connect(database=dbname, **DBPARAMS)
+        cursor = connection.cursor()
+        unique_query = f"SELECT country, SUM(CASE WHEN ipc = 1 THEN 1 ELSE 0 END) AS s_ipc \
+            from `{tablename}` GROUP BY country HAVING (country IS NOT NULL) AND (s_ipc >= 10000) \
+                ORDER BY s_ipc DESC"
+        cursor.execute(unique_query)
+        with open(resultfilename, 'w+') as write_file:
+            for line in cursor.fetchall():
+                write_file.write('"'+ str(line[0]) + '","' + str(line[1]) + '"\n')
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
     assert os.path.exists(resultfilename)
     assert compare_results(resultfilename)
 
@@ -280,6 +392,45 @@ def make_classes():
     All the assert statements at the end of this function need to pass correctly.
 
     """
+    class Task: 
+        def __init__(self, start_time):
+            self.start_time = start_time
+            self.results = None
+        def run(self, *args):
+            raise Exception
+
+        def __lt__(self, other_task):
+            return self.start_time < other_task.start_time
+
+        def __le__(self, other_task):
+            return self.start_time <= other_task.start_time
+
+        def __gt__(self, other_task):
+            return self.start_time > other_task.start_time
+
+        def __ge__(self, other_task):
+            return self.start_time >= other_task.start_time
+
+        def __eq__(self, other_task):
+            return self.start_time == other_task.start_time
+
+        def __ne__(self, other_task):
+            return self.start_time != other_task.start_time
+    
+    class ListSum(Task):
+        def run(self, *args):
+            if all([isinstance(arg, int) for arg in args]):
+                self.results = sum(args)
+            else:
+                raise ValueError("Not all args are integers")
+    
+    class ListAverage(Task):
+        def run(self, *args):
+            if all([isinstance(arg, int) for arg in args]):
+                self.results = sum(args) / len(args)
+            else:
+                raise ValueError("Not all args are integers")
+
 
     t1 = Task(datetime.now())
     try:
